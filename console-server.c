@@ -43,11 +43,15 @@
 #define DBUS_ERR "org.openbmc.error"
 #define DBUS_NAME "xyz.openbmc_project.console"
 #define OBJ_NAME "/xyz/openbmc_project/console"
+#define CONSOLE_DBUS_NAME "xyz.openbmc_project.Console.%s"
+#define CONSOLE_OBJ_NAME "/xyz/openbmc_project/console/%s"
+#define CONSOLE_INTF_NAME "xyz.openbmc_project.Console.Access"
 
 struct console {
 	const char	*tty_kname;
 	char		*tty_sysfs_devnode;
 	char		*tty_dev;
+	const char	*console_id;
 	int		tty_sirq;
 	int		tty_lpc_addr;
 	speed_t		tty_baud;
@@ -373,6 +377,26 @@ static int get_handler(sd_bus *bus, const char *path, const char *interface,
 	return r;
 }
 
+static int get_socket_name(sd_bus *bus, const char *path, const char *interface,
+               const char *property, sd_bus_message *reply, void *userdata,
+               sd_bus_error *error) {
+
+    struct console *console = userdata;
+    socket_path_t socketName;
+
+    /* TODO: Get the socket name from socket code. */
+
+    /* Move this to socket code */
+    snprintf(socketName, sizeof(socketName), "obmc-console.%s",
+             console->console_id);
+
+    /* TODO: Add '\0' at the start */
+
+    warnx("NINAD:%s: socket name %s\n", __FUNCTION__, socketName);
+
+	return sd_bus_message_append(reply, "s", socketName);
+}
+
 static const sd_bus_vtable console_vtable[] = {
 	SD_BUS_VTABLE_START(0),
 	SD_BUS_METHOD("setBaudRate", "u", "x", method_set_baud_rate,
@@ -380,10 +404,17 @@ static const sd_bus_vtable console_vtable[] = {
 	SD_BUS_PROPERTY("baudrate", "u", get_handler, 0, 0),
 	SD_BUS_VTABLE_END,};
 
+static const sd_bus_vtable supported_consoles_vtable[] = {
+	SD_BUS_VTABLE_START(0),
+	SD_BUS_PROPERTY("SocketName", "s", get_socket_name, 0, 0),
+	SD_BUS_VTABLE_END,};
+
 static void dbus_init(struct console *console, struct config *config)
 {
 	int dbus_poller = 0;
 	int fd, r;
+        char console_obj_name[1024];   /* Decide path length */
+        char console_bus_name[1024];   /* Decide path length */
 
 	if (!console) {
 		warnx("Couldn't get valid console");
@@ -409,6 +440,23 @@ static void dbus_init(struct console *console, struct config *config)
 		warnx("Failed to acquire service name: %s", strerror(-r));
 		return;
 	}
+
+	/* Register support console interface */
+	sprintf(console_obj_name, CONSOLE_OBJ_NAME, console->console_id);
+    r = sd_bus_add_object_vtable(console->bus, NULL, console_obj_name, CONSOLE_INTF_NAME,
+                                 supported_consoles_vtable, console);
+    if (r < 0) {
+        warnx("Failed to issue method call: %s", strerror(-r));
+        return;
+    }
+
+	sprintf(console_bus_name, CONSOLE_DBUS_NAME, console->console_id);
+    r = sd_bus_request_name(console->bus, console_bus_name, SD_BUS_NAME_ALLOW_REPLACEMENT
+                            |SD_BUS_NAME_REPLACE_EXISTING);
+    if (r < 0) {
+        warnx("Failed to acquire service name: %s", strerror(-r));
+        return;
+    }
 
 	fd = sd_bus_get_fd(console->bus);
 	if (fd < 0) {
@@ -821,6 +869,11 @@ int main(int argc, char **argv)
 		usage(argv[0]);
 		return EXIT_FAILURE;
 	}
+
+	console->console_id = config_get_value(config, "socket-id");
+
+	warn("%s: console_id=%s\n",
+	     __FUNCTION__, console->console_id);
 
 	console->tty_kname = config_tty_kname;
 
